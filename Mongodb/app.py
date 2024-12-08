@@ -1,10 +1,7 @@
 import streamlit as st 
-from PIL import Image
 from pymongo import MongoClient
 import pandas as pd 
-import matplotlib.pyplot as plt 
-import numpy as np 
-import plotly.express as px 
+
 
 #Kết nối với mongodb để lấy dữ liệu về 
 client = MongoClient("mongodb://localhost:27017/")
@@ -12,20 +9,6 @@ db = client['data']
 collection = db['football']
 data = pd.DataFrame(list(collection.find()))
 data = data.drop(['_id','body_type'], axis = 1)
-
-
-#Tạo hàm để thực hiện CRUD 
-def create_collection(name_collection:str):
-    return db[name_collection]
-def add_data(collection,data):
-    return collection.insert_one(data)
-def read_data(collection):
-    return pd.DataFrame(list(collection.find()))
-def delete_data(collection,query: dict):
-    return collection.delete_one(query)
-def update_data(collection ,query: dict, new_data:dict):
-    return collection.update_one(query,{'$set': new_data})
-
 
 
 def main():
@@ -70,40 +53,99 @@ def main():
         st.write(young_player.sort_values(by=['overall_rating','potential','acceleration'],ascending=False).head(20))
     
     
-    
+
     elif choice == 'Create Team':
         st.subheader('Create Team')
-        price = st.slider("Select a price range", 0, 110500000, (0, 110500000))
-        position = data['positions'].tolist()
-        select_position = st.selectbox("Chọn vị trí muốn tìm", tuple(position),index = None, placeholder='Điền vào đây')
-        
-        
-        df = data[data['value_euro'].between(price[0], price[1])]
-        df = df[df['positions'] == select_position]
-        
 
-        st.button('Lưu đội hình vào cơ sở dữ liệu'):
-        team_name = st.text_input('Nhập tên đội hình của bạn:')
-        new_team = db[team_name]
-        player = st.text_input('Tên cầu thủ')
-        new_team.insert_one(player)
-                
-        
-        st.write(df)
-        
+        # Tạo session_state để lưu đội hình
+        if 'user_select' not in st.session_state:
+            st.session_state['user_select'] = []
 
-def plot_radar(player_data):
-    stats = player_data[['crossing', 'finishing', 'short_passing', 'dribbling', 'defensive_awareness']].mean()
-    radar = pd.DataFrame({
-        'Attribute': stats.index,
-        'Value': stats.values
-    })
-    fig = px.line_polar(radar, r='Value', theta='Attribute', line_close=True)
-    st.plotly_chart(fig)
+        # Chọn hành động
+        action = st.radio("Chọn", ["Tạo đội hình mới", "Xem đội hình đã lưu", "Sửa đội hình", "Xóa đội hình"])
 
+        if action == "Tạo đội hình mới":
+            team_name = st.text_input("Nhập tên đội hình của bạn:")
+            price = st.slider("Chọn khoảng giá trị", 0, 110500000, (0, 110500000))
+            positions = data['positions'].unique().tolist()
+            select_position = st.selectbox("Chọn vị trí muốn tìm", positions, index=0)
 
+            filtered_df = data[data['value_euro'].between(price[0], price[1])]
+            filtered_df = filtered_df[filtered_df['positions'].str.strip().str.lower() == select_position.strip().lower()]
 
+            for _, row in filtered_df.iterrows():
+                if st.checkbox(f"Lấy {row['name']} giá {row['value_euro']} euro", key=f"{row['name']}_{row['value_euro']}"):
+                    if row['name'] not in [player['name'] for player in st.session_state['user_select']]:
+                        st.session_state['user_select'].append({
+                            'name': row['name'],
+                            'value_euro': row['value_euro'],
+                            'positions': row['positions']
+                        })
 
+            st.write("### Đội hình của bạn:")
+            if st.session_state['user_select']:
+                selected_players_df = pd.DataFrame(st.session_state['user_select'])
+                st.dataframe(selected_players_df)
+            else:
+                st.write("Bạn chưa chọn cầu thủ nào!")
+
+            if st.button("Lưu đội hình"):
+                if team_name.strip() and st.session_state['user_select']:
+                    new_team = db[team_name.strip()]
+                    new_team.insert_many(st.session_state['user_select'])
+                    st.success(f"Đội hình '{team_name}' đã được lưu thành công!")
+                else:
+                    st.error("Vui lòng nhập tên đội hình và chọn ít nhất một cầu thủ.")
+
+        elif action == "Xem đội hình đã lưu":
+            team_names = db.list_collection_names()
+            if not team_names:
+                st.warning("Hiện tại chưa có đội hình nào được lưu!")
+            else:
+                selected_team = st.selectbox("Chọn đội hình để xem:", team_names)
+                if selected_team:
+                    team_data = pd.DataFrame(list(db[selected_team].find()))
+                    if not team_data.empty:
+                        st.write(f"### Đội hình: {selected_team}")
+                        st.dataframe(team_data)
+                    else:
+                        st.warning("Đội hình này không có cầu thủ nào!")
+
+        elif action == "Sửa đội hình":
+            team_names = db.list_collection_names()
+            if not team_names:
+                st.warning("Hiện tại chưa có đội hình nào để sửa!")
+            else:
+                selected_team = st.selectbox("Chọn đội hình để sửa:", team_names)
+                if selected_team:
+                    team_data = pd.DataFrame(list(db[selected_team].find()))
+                    st.write(f"### Đội hình hiện tại: {selected_team}")
+                    st.dataframe(team_data)
+
+                    # Thêm cầu thủ
+                    st.write("### Thêm cầu thủ mới:")
+                    new_player = st.selectbox("Chọn cầu thủ thêm vào đội hình:", data['name'])
+                    if st.button("Thêm cầu thủ"):
+                        player_data = data[data['name'] == new_player].to_dict(orient='records')[0]
+                        db[selected_team].insert_one(player_data)
+                        st.success(f"Đã thêm cầu thủ {new_player} vào đội hình {selected_team}!")
+
+                    # Xóa cầu thủ
+                    st.write("### Xóa cầu thủ:")
+                    player_to_remove = st.selectbox("Chọn cầu thủ muốn xóa:", team_data['name'])
+                    if st.button("Xóa cầu thủ"):
+                        db[selected_team].delete_one({'name': player_to_remove})
+                        st.success(f"Đã xóa cầu thủ {player_to_remove} khỏi đội hình {selected_team}!")
+
+        elif action == "Xóa đội hình":
+            team_names = db.list_collection_names()
+            if not team_names:
+                st.warning("Hiện tại chưa có đội hình nào để xóa!")
+            else:
+                selected_team = st.selectbox("Chọn đội hình để xóa:", team_names)
+                if st.button("Xóa đội hình"):
+                    db[selected_team].drop()
+                    st.success(f"Đội hình {selected_team} đã được xóa thành công!")
 
 
 if __name__ == '__main__':
